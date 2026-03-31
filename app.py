@@ -3,7 +3,7 @@ import whisper
 from sentence_transformers import SentenceTransformer, util
 import joblib
 import os
-import tempfile
+import subprocess
 
 # ==========================================
 # 1. LOAD AI MODELS (Cached for speed)
@@ -19,11 +19,11 @@ def load_ai_models():
     # 2. Load Semantic AI for comparing Title vs Transcript
     models['semantic'] = SentenceTransformer('all-MiniLM-L6-v2')
     
-    # 3. Load your trained Scikit-Learn model (Fallback to dummy if missing)
+    # 3. Load your trained Scikit-Learn model
     try:
         models['clickbait'] = joblib.load("models/clickbait_model.pkl")
     except FileNotFoundError:
-        st.warning("⚠️ 'models/clickbait_model.pkl' not found. Please run train.py first. (Waiting for model...)")
+        st.warning("⚠️ 'models/clickbait_model.pkl' not found. Please run train.py first.")
         st.stop()
         
     return models
@@ -83,34 +83,49 @@ def predict_retention(hook_score: float, deception_score: float) -> dict:
 st.set_page_config(page_title="Video AI Analyzer", page_icon="📊", layout="centered")
 
 st.title("📊 Video Content AI Analyzer")
-st.markdown("Upload a video/audio file. AI will transcribe it, analyze the hook, and check if it delivers on the title's promise.")
+st.markdown("Analyze raw `.mp4` files locally to predict retention and clickbait penalties before you publish.")
 
-# Load models (shows a spinner automatically while loading)
+# Load models
 with st.spinner("Loading AI Models into memory..."):
     ai = load_ai_models()
 
-# UI Inputs
+# UI Inputs (Notice the file uploader is gone!)
 video_title = st.text_input("Enter the Planned Video Title / Topic:")
-uploaded_file = st.file_uploader("Upload Video/Audio File", type=['mp4', 'mp3', 'wav', 'm4a'])
+video_filepath = st.text_input(
+    "Paste the full path to your .mp4 file:", 
+    placeholder=r"e.g., C:\Users\viraj\Videos\my_massive_video.mp4"
+)
 
 if st.button("Run Full AI Analysis", type="primary"):
-    if not video_title or not uploaded_file:
-        st.error("Please provide both a title and a media file.")
+    if not video_title or not video_filepath:
+        st.error("Please provide both a title and a file path.")
+    elif not os.path.exists(video_filepath):
+        st.error(f"File not found! Double-check this path: {video_filepath}")
     else:
-        # Step 1: Save the uploaded file temporarily so Whisper can read it
-        with st.spinner("🎧 Transcribing Audio with Whisper AI (This may take a minute)..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_file:
-                tmp_file.write(uploaded_file.read())
-                tmp_filepath = tmp_file.name
-            
-            # Run Whisper Transcription
-            transcript_result = ai['whisper'].transcribe(tmp_filepath)
+        # Step 1: Rip the audio instantly using FFmpeg
+        tmp_audio_path = "temp_audio.wav"
+        with st.spinner("📥 Extracting audio from the video file..."):
+            try:
+                # This grabs ONLY the audio, converting 3GB of video into ~50MB of audio
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", video_filepath, 
+                    "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", 
+                    tmp_audio_path
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            except subprocess.CalledProcessError:
+                st.error("FFmpeg failed to extract audio. Ensure FFmpeg is installed on your system.")
+                st.stop()
+
+        # Step 2: Run Whisper on the tiny audio file
+        with st.spinner("🎧 Transcribing Audio with Whisper AI (This takes time)..."):
+            transcript_result = ai['whisper'].transcribe(tmp_audio_path)
             transcript_text = transcript_result["text"]
             
-            # Clean up the heavy video file
-            os.remove(tmp_filepath)
+            # Clean up the temp audio file
+            if os.path.exists(tmp_audio_path):
+                os.remove(tmp_audio_path)
 
-        # Step 2: Run NLP Analysis
+        # Step 3: Run NLP Analysis
         with st.spinner("🧠 Running Deep NLP Analysis..."):
             # A. Title Sensationalism
             title_prob = ai['clickbait'].predict_proba([video_title])[0][1] * 100
@@ -126,7 +141,7 @@ if st.button("Run Full AI Analysis", type="primary"):
             # D. Retention Math
             retention = predict_retention(hook_data["score"], deception_score)
 
-        # Step 3: Display Results
+        # Step 4: Display Results
         st.success("Analysis Complete!")
         
         st.subheader("Scores")
