@@ -1,5 +1,6 @@
-fastapi
-uvicorn
+streamlit
+openai-whisper
+sentence-transformers
 scikit-learn
 pandas
-spacy
+joblib
